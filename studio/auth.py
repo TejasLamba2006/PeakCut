@@ -377,12 +377,18 @@ def google_finish(code: str, state: str):
     email = info["email"].lower()
     pic = info.get("picture") or ""
     with db.engine.begin() as c:
-        u = c.execute(sa.select(db.users).where(sa.or_(db.users.c.google_sub == info["sub"], db.users.c.email == email))).first()
-        if u and not u.google_sub:
-            # First Google sign-in for an email that already has a password account. That password was set without
-            # proving ownership of the email, so drop it (and any open sessions): only the Google owner keeps access.
-            c.execute(db.users.update().where(db.users.c.id == u.id).values(google_sub=info["sub"], password_hash=None))
-            c.execute(db.sessions.delete().where(db.sessions.c.user_id == u.id))
+        # Match the Google account first. Only fall back to the email when no account has this Google id yet.
+        u = c.execute(sa.select(db.users).where(db.users.c.google_sub == info["sub"])).first()
+        if not u:
+            u = c.execute(sa.select(db.users).where(db.users.c.email == email)).first()
+            if u and u.google_sub:
+                # The email belongs to another Google account (the address was reassigned or the owner changed it).
+                raise AuthError("That email is already linked to a different Google account.")
+            if u:
+                # First Google sign-in for an email that already has a password account. That password was set without
+                # proving ownership of the email, so drop it (and any open sessions): only the Google owner keeps access.
+                c.execute(db.users.update().where(db.users.c.id == u.id).values(google_sub=info["sub"], password_hash=None))
+                c.execute(db.sessions.delete().where(db.sessions.c.user_id == u.id))
     if u:
         forget(u.id)
         if u.disabled:
